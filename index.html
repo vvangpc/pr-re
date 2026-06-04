@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>专利优先审查查找工具</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>专利优先审查查找工具</h1>
+  <p class="subtitle">输入候选 <b>IPC 分类号</b> 与 <b>关键词</b>，判定技术方案能否走优先审查。
+     规则：<b>分类号匹配 且 关键词匹配</b>。</p>
+</header>
+
+<main class="container">
+  <section class="query-card">
+    <div class="field">
+      <label for="ipc">IPC 国际专利分类号</label>
+      <input id="ipc" type="text" placeholder="如 B60K6/10、H01M10/0563、G06F40/30" autocomplete="off" autofocus>
+      <div class="hint">填单个分类号；大小写不限，可带子组（/30）。</div>
+    </div>
+    <div class="field">
+      <label for="kw">关键词（空格 / 逗号 / 顿号分隔，可多个）</label>
+      <input id="kw" type="text" placeholder="如 电动汽车 整车 / 磷酸铁锂 正极" autocomplete="off">
+      <div class="hint">命中任一即可；中文按子串宽松匹配。不填则仅按 IPC 提示落点。</div>
+    </div>
+    <div class="actions">
+      <button id="btn-search" class="primary">查询</button>
+      <button id="btn-clear" class="ghost">清空</button>
+      <span id="db-stat" class="db-stat"></span>
+    </div>
+  </section>
+
+  <section id="verdict" class="verdict" hidden></section>
+  <section id="results" class="results"></section>
+
+  <details class="legend">
+    <summary>结果分档说明</summary>
+    <ul>
+      <li><span class="tag t-ok">完全命中</span> IPC 与关键词均命中 —— 落入优先审查目录范围。</li>
+      <li><span class="tag t-warn">需人工确认</span> IPC 命中，但该条目<b>无关键词限定</b>（如绿色技术目录）——不自动放行，请人工确认。</li>
+      <li><span class="tag t-warn">疑似命中</span> IPC 命中，关键词列以「等」结尾且未显式命中 —— 请人工复核。</li>
+      <li><span class="tag t-miss">IPC 在范围</span> IPC 落入该分支，但所给关键词未对上 —— 可调整关键词再判。</li>
+      <li><span class="tag t-no">未命中</span> 该 IPC 不在任何目录范围内。</li>
+    </ul>
+  </details>
+</main>
+
+<footer class="app-footer">
+  <p>数据来源：合并 PDF（“新三样”/关键数字技术/绿色技术/战略性新兴产业 等分类体系）。
+     本工具仅供形式比对参考，最终以官方审查为准。</p>
+</footer>
+
+<!-- 数据库：_loader 必须最先；各目录数据随后注入 -->
+<script src="data/_loader.js"></script>
+<script src="data/xinsanyang.js"></script>
+<script src="data/shuzi.js"></script>
+<script src="data/shuzi_chip.js"></script>
+<script src="data/shuzi_quantum.js"></script>
+<script src="data/shuzi_iot.js"></script>
+<script src="data/shuzi_blockchain.js"></script>
+<script src="data/shuzi_iiot.js"></script>
+<script src="data/shuzi_metaverse.js"></script>
+<script src="data/lvse.js"></script>
+<script src="data/zhanlue.js"></script>
+<script src="data/zhanlue_1.js"></script>
+<script src="data/zhanlue_2.js"></script>
+<script src="data/zhanlue_3.js"></script>
+<script src="data/zhanlue_4.js"></script>
+<!-- 匹配引擎 -->
+<script src="match.js"></script>
+<!-- UI 逻辑 -->
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+
+  var CAT_SHORT = {
+    xinsanyang: '新三样', shuzi: '关键数字技术', lvse: '绿色技术',
+    lvse_appendix: '绿色检索式', zhanlue: '战略性新兴产业'
+  };
+  var STATUS_META = {
+    MATCHED:       { cls: 't-ok',   label: '完全命中' },
+    IPC_ONLY_WARN: { cls: 't-warn', label: '需人工确认（无关键词）' },
+    KW_OPEN_ENDED: { cls: 't-warn', label: '疑似命中（列表含「等」）' },
+    IPC_KW_MISS:   { cls: 't-miss', label: 'IPC 在范围 · 关键词未对上' }
+  };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function showDbStat() {
+    if (!window.DB || !DB.stats) return;
+    var s = DB.stats();
+    var loaded = Object.keys(s.byCatalog).length;  // 仅计已含数据的目录
+    $('db-stat').textContent = '已载入 ' + loaded + ' 个目录 · ' +
+      s.entries + ' 个技术分支 · ' + s.rules + ' 条规则';
+  }
+
+  function ruleReasonHtml(res) {
+    var r = res.rule, parts = [];
+    parts.push('<div class="reason"><span class="k">命中 IPC</span>：<code>' +
+      esc(res.matchedPattern) + '</code></div>');
+    if (res.status === 'MATCHED') {
+      parts.push('<div class="reason"><span class="k">命中关键词</span>：<b>' +
+        esc(res.matchedEntryKw) + '</b> ↔ 你的「' + esc(res.matchedQueryKw) + '」</div>');
+    } else if (res.status === 'IPC_ONLY_WARN') {
+      parts.push('<div class="reason warn">该条目无关键词限定，请人工确认是否确属本分支。</div>');
+    } else if (res.status === 'KW_OPEN_ENDED') {
+      parts.push('<div class="reason warn">关键词列以「等」结尾、未显式命中：' +
+        esc((r.keywords || []).join('、')) + '。请人工复核。</div>');
+    } else if (res.status === 'IPC_KW_MISS') {
+      parts.push('<div class="reason">本分支关键词：' +
+        esc((r.keywords || []).join('、')) + '。可调整关键词后重判。</div>');
+    }
+    if (r.coverage) parts.push('<div class="reason"><span class="k">覆盖</span>：' + esc(r.coverage) + '</div>');
+    if (r.keyword_exclusions && r.keyword_exclusions.length) {
+      parts.push('<div class="reason">排除关键词：' + esc(r.keyword_exclusions.join('、')) + '</div>');
+    }
+    if (r.ipc_exclusions && r.ipc_exclusions.length) {
+      parts.push('<div class="reason">排除 IPC：' + esc(r.ipc_exclusions.join('，')) + '</div>');
+    }
+    return parts.join('');
+  }
+
+  function cardHtml(res) {
+    var e = res.entry, m = STATUS_META[res.status];
+    var src = e.source || {};
+    var raw = src.raw_text ? '<details class="raw"><summary>原文</summary><pre>' +
+      esc(src.raw_text) + '</pre></details>' : '';
+    var pageTxt = src.page ? '<span class="page">PDF p.' + esc(src.page) + '</span>' : '';
+    return '<article class="card ' + m.cls + '">' +
+      '<div class="card-top">' +
+        '<span class="tag ' + m.cls + '">' + m.label + '</span>' +
+        '<span class="catalog">' + esc(CAT_SHORT[e.catalog_id] || e.catalog_id) + '</span>' +
+        pageTxt +
+      '</div>' +
+      '<div class="branch"><b>' + esc(e.branch_no || '') + '</b> ' + esc(e.branch_name || '') +
+        (e.subsys ? ' <span class="subsys">' + esc(e.subsys) + '</span>' : '') + '</div>' +
+      ruleReasonHtml(res) + raw +
+    '</article>';
+  }
+
+  function groupHtml(title, list, collapsed) {
+    if (!list.length) return '';
+    var cards = list.map(cardHtml).join('');
+    if (collapsed) {
+      return '<details class="group"><summary>' + esc(title) + '（' + list.length + '）</summary>' +
+        '<div class="card-grid">' + cards + '</div></details>';
+    }
+    return '<div class="group"><h2>' + esc(title) + '（' + list.length + '）</h2>' +
+      '<div class="card-grid">' + cards + '</div></div>';
+  }
+
+  function render(out) {
+    var V = $('verdict'), R = $('results');
+    if (!out.ipcValid) {
+      V.hidden = false; V.className = 'verdict v-no';
+      V.innerHTML = '请输入有效的 IPC 分类号，例如 <code>B60K6/10</code>、<code>H01M10/0563</code>。';
+      R.innerHTML = ''; return;
+    }
+    var g = { MATCHED: [], IPCONLY: [], OPEN: [], MISS: [] };
+    out.results.forEach(function (r) {
+      if (r.status === 'MATCHED') g.MATCHED.push(r);
+      else if (r.status === 'IPC_ONLY_WARN') g.IPCONLY.push(r);
+      else if (r.status === 'KW_OPEN_ENDED') g.OPEN.push(r);
+      else g.MISS.push(r);
+    });
+    var warnN = g.IPCONLY.length + g.OPEN.length;
+
+    // 顶部结论横幅
+    V.hidden = false;
+    var ipcTxt = esc(out.qNorm.norm), kwTxt = out.qKws.length ? esc(out.qKws.join('、')) : '（未填）';
+    var head = 'IPC <code>' + ipcTxt + '</code> · 关键词 ' + kwTxt + '<br>';
+    if (g.MATCHED.length) {
+      V.className = 'verdict v-ok';
+      V.innerHTML = head + '✅ <b>落入优先审查目录范围</b>：完全命中 ' + g.MATCHED.length + ' 项' +
+        (warnN ? '，另有 ' + warnN + ' 项需确认/疑似。' : '。');
+    } else if (warnN) {
+      V.className = 'verdict v-warn';
+      V.innerHTML = head + '⚠️ <b>需人工确认 / 疑似命中</b> ' + warnN + ' 项，无完全命中（IPC 在范围但关键词未明确对上）。';
+    } else if (g.MISS.length) {
+      V.className = 'verdict v-miss';
+      V.innerHTML = head + 'ℹ️ IPC 落在 ' + g.MISS.length + ' 个分支范围内，但<b>关键词未对上</b>；请调整关键词。';
+    } else {
+      V.className = 'verdict v-no';
+      V.innerHTML = head + '❌ <b>未命中</b>：该 IPC 不在任何优先审查目录范围内。';
+    }
+
+    // 有完全命中时，疑似组默认折叠以降噪
+    var collapseOpen = g.MATCHED.length > 0;
+    R.innerHTML =
+      groupHtml('完全命中', g.MATCHED, false) +
+      groupHtml('需人工确认（条目无关键词限定）', g.IPCONLY, false) +
+      groupHtml('疑似命中（关键词列含「等」，未明确命中）', g.OPEN, collapseOpen) +
+      groupHtml('IPC 在范围 · 关键词未对上', g.MISS, true);
+  }
+
+  function doSearch() {
+    var out = window.Match.lookup($('ipc').value, $('kw').value);
+    render(out);
+  }
+
+  function init() {
+    showDbStat();
+    if (window.Match && Match.selfTest) Match.selfTest();
+    $('btn-search').addEventListener('click', doSearch);
+    $('btn-clear').addEventListener('click', function () {
+      $('ipc').value = ''; $('kw').value = '';
+      $('verdict').hidden = true; $('results').innerHTML = ''; $('ipc').focus();
+    });
+    function onEnter(ev) { if (ev.key === 'Enter') doSearch(); }
+    $('ipc').addEventListener('keydown', onEnter);
+    $('kw').addEventListener('keydown', onEnter);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+</body>
+</html>

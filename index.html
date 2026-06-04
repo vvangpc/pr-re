@@ -28,9 +28,10 @@
       </div>
     </div>
     <div class="actions">
-      <button id="btn-search" class="primary">查询</button>
+      <button id="btn-search" class="primary">优先审查查询</button>
+      <button id="btn-prefiling" class="primary" type="button">快速预审查询</button>
       <button id="btn-clear" class="ghost">清空</button>
-      <button id="btn-recog" class="ghost" type="button">识别关键词</button>
+      <button id="btn-recog" class="ghost" type="button">提取关键词</button>
       <span id="db-stat" class="db-stat"></span>
     </div>
     <div id="kw-chips" class="kw-chips" hidden></div>
@@ -38,6 +39,7 @@
 
   <section id="verdict" class="verdict" hidden></section>
   <section id="results" class="results"></section>
+  <section id="prefiling" class="prefiling" hidden></section>
 
   <details class="legend">
     <summary>结果分档说明</summary>
@@ -52,8 +54,8 @@
 </main>
 
 <footer class="app-footer">
-  <p>数据来源：合并 PDF（“新三样”/关键数字技术/绿色技术/战略性新兴产业 等分类体系）。
-     本工具仅供形式比对参考，最终以官方审查为准。</p>
+  <p>数据来源：“新三样”/关键数字技术/绿色技术/战略性新兴产业 等分类体系<br>
+    本工具仅供形式比对参考，最终以官方审查为准。</p>
 </footer>
 
 <!-- 数据库：_loader 必须最先；各目录数据随后注入 -->
@@ -74,6 +76,8 @@
 <script src="data/zhanlue_4.js"></script>
 <!-- 匹配引擎 -->
 <script src="match.js"></script>
+<!-- 保护中心预审范围数据 -->
+<script src="data/prefiling.js"></script>
 <!-- UI 逻辑 -->
 <script>
 (function () {
@@ -262,10 +266,11 @@
   function cleanKw(s) { return String(s || '').replace(/[。．]/g, ' '); }
 
   function doSearch() {
+    $('prefiling').hidden = true; $('prefiling').innerHTML = '';   // 互斥：清空预审范围结果
     var kwRaw = $('kw').value;
     if (looksLikeProse(kwRaw)) {
       var V = $('verdict'); V.hidden = false; V.className = 'verdict v-warn';
-      V.innerHTML = '检测到整段文字，未拆分为关键词。请先点「识别关键词」，或用 空格、逗号、顿号、分号、句号 手动断开后再查询。';
+      V.innerHTML = '检测到整段文字，未拆分为关键词。请先点「提取关键词」，或用 空格、逗号、顿号、分号、句号 手动断开后再查询。';
       $('results').innerHTML = '';
       return;
     }
@@ -348,13 +353,71 @@
     }
   }
 
+  /* ----------------------- 保护中心快速预审范围 ----------------------- */
+  // 按 IPC 小类查 成都/四川/重庆 预审受理范围；只看分类号，不做可专利性判断。
+  function prefilingLookup(ipcStr) {
+    var toks = splitIpcLines(ipcStr), subs = [], seen = {}, invalid = [], broad = [];
+    toks.forEach(function (t) {
+      var n = window.Match.normalizeIpc(t);
+      if (!n.valid) { invalid.push(t); return; }
+      if (!n.subclass) { broad.push(t); return; }                 // 仅到部/大类，无法定位小类
+      var s = n.section + n.cls + n.subclass;
+      if (!seen[s]) { seen[s] = { sub: s, desc: ((window.PREFILING && window.PREFILING.desc[s]) || ''), raws: [t] }; subs.push(seen[s]); }
+      else if (seen[s].raws.indexOf(t) < 0) seen[s].raws.push(t);
+    });
+    var P = window.PREFILING || { centers: [], scope: {} };
+    var centers = P.centers.map(function (c) {
+      var sc = P.scope[c.id] || {};
+      var hits = subs.filter(function (x) { return sc[x.sub] !== undefined; })
+                     .map(function (x) { return { sub: x.sub, desc: x.desc, field: sc[x.sub] }; });
+      return { 简称: c.简称, 全称: c.全称, fields: c.fields, hits: hits };
+    });
+    return { subs: subs, centers: centers, invalid: invalid, broad: broad, hasInput: toks.length > 0 };
+  }
+
+  function renderPrefiling(out) {
+    var host = $('prefiling'); host.hidden = false;
+    if (!out.hasInput) {
+      host.innerHTML = '<div class="pf-center-card pf-none"><div class="pf-miss-note">请输入至少一个 IPC 分类号，例如 <code>G06F</code>、<code>A61K</code>、<code>B60K6/10</code>。</div></div>';
+      return;
+    }
+    var subTxt = out.subs.length ? out.subs.map(function (x) { return esc(x.sub); }).join('、') : '（无有效小类）';
+    var html = '<h2>保护中心快速预审范围</h2><div class="pf-query">所查小类：' + subTxt + '</div>';
+    html += out.centers.map(function (c) {
+      var head = '<div class="pf-chead"><b>' + esc(c.简称) + '</b><span class="pf-fields">' + esc(c.fields.join(' / ')) + '</span></div>';
+      var body;
+      if (c.hits.length) {
+        body = '<div class="pf-verdict pf-ok">✅ 命中 ' + c.hits.length + ' / ' + out.subs.length + ' 个分类号</div>' +
+          c.hits.map(function (h) {
+            return '<div class="pf-hit"><span class="pf-sub">' + esc(h.sub) + '</span>' +
+              '<span class="pf-field">' + esc(h.field) + '</span>' +
+              '<span class="pf-name">' + esc(h.desc || '') + '</span></div>';
+          }).join('');
+      } else {
+        body = '<div class="pf-verdict pf-none-v">❌ 所查分类号均不在该中心预审范围</div>';
+      }
+      return '<article class="pf-center-card' + (c.hits.length ? '' : ' pf-none') + '">' + head + body + '</article>';
+    }).join('');
+    if (out.broad.length)
+      html += '<div class="pf-broad">以下输入仅到「部 / 大类」，无法定位小类，请补全到 4 位小类（如 G06 → G06F）：<code>' + out.broad.map(esc).join('</code>、<code>') + '</code></div>';
+    if (out.invalid.length)
+      html += '<div class="pf-invalid">无法识别的分类号：<code>' + out.invalid.map(esc).join('</code>、<code>') + '</code></div>';
+    html += '<div class="pf-footer">提示：以上仅表示该 IPC 小类是否落入各中心<b>预审受理范围</b>，<b>不代表该技术方案一定能通过预审</b>。是否可预审，需由代理师结合创造性等实质条件自行判断。</div>';
+    host.innerHTML = html;
+  }
+
   function init() {
     showDbStat();
     if (window.Match && Match.selfTest) Match.selfTest();
     $('btn-search').addEventListener('click', doSearch);
+    $('btn-prefiling').addEventListener('click', function () {
+      $('verdict').hidden = true; $('verdict').innerHTML = ''; $('results').innerHTML = '';  // 互斥：清空优先审查结果
+      renderPrefiling(prefilingLookup($('ipc').value));
+    });
     $('btn-clear').addEventListener('click', function () {
       $('ipc').value = ''; $('kw').value = '';
       $('verdict').hidden = true; $('results').innerHTML = ''; $('ipc').focus();
+      $('prefiling').hidden = true; $('prefiling').innerHTML = '';
       recogTerms = []; $('kw-chips').hidden = true; $('kw-chips').innerHTML = '';
     });
     $('btn-recog').addEventListener('click', onRecognize);

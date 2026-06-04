@@ -26,7 +26,16 @@ code { font-family: "Cascadia Code", Consolas, monospace; background: #eef2f7;
   background: linear-gradient(120deg, #1e3a8a, #2563eb);
   color: #fff; padding: 22px 20px 18px;
 }
-.app-header h1 { margin: 0 0 4px; font-size: 1.5rem; letter-spacing: .5px; }
+.app-header h1 { margin: 0; font-size: 1.5rem; letter-spacing: .5px; }
+.app-header-row { max-width: 920px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.app-logo { height: 42px; width: 42px; flex: none; border-radius: 8px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+.app-ver { flex: none; align-self: center; font-size: .72rem; font-weight: 600; letter-spacing: .5px;
+  color: #fff; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.45); border-radius: 20px; padding: 2px 9px; }
+.help-btn { flex: none; font: inherit; cursor: pointer; color: #fff; background: rgba(255,255,255,.14);
+  border: 1px solid rgba(255,255,255,.55); border-radius: 8px; padding: 7px 18px; font-size: .9rem;
+  transition: background .15s; }
+.help-btn:hover { background: rgba(255,255,255,.28); }
 .subtitle { margin: 0; opacity: .94; font-size: .92rem; }
 .subtitle b { color: #fde68a; }
 
@@ -80,6 +89,10 @@ button.primary { background: var(--brand); color: #fff; font-weight: 600; }
 button.primary:hover { background: var(--brand-d); }
 button.ghost { background: #fff; border-color: var(--line); color: var(--ink); }
 button.ghost:hover { background: #f8fafc; }
+button.tool { background: #0d9488; color: #fff; font-weight: 600; }     /* 提取关键词 / 匹配分类号（同色） */
+button.tool:hover { background: #0f766e; }
+button.neutral { background: #64748b; color: #fff; font-weight: 600; }  /* 清空 */
+button.neutral:hover { background: #475569; }
 .db-stat { color: var(--muted); font-size: .8rem; margin-left: auto; }
 
 /* 结论横幅 */
@@ -136,8 +149,9 @@ details.group > summary { cursor: pointer; font-weight: 600; padding: 8px 0; col
 .legend li { margin: 7px 0; font-size: .9rem; }
 .legend .tag { margin-right: 6px; }
 
-.app-footer { max-width: 920px; margin: 10px auto 30px; padding: 0 20px; }
-.app-footer p { color: var(--muted); font-size: .8rem; }
+.app-footer { max-width: 920px; margin: 16px auto 30px; padding: 14px 20px 0; border-top: 1px solid var(--line); }
+.app-footer p { color: var(--muted); font-size: .8rem; line-height: 1.6; margin: 0; }
+.app-footer .footer-copyright { margin-top: 6px; opacity: .85; }
 
 /* 保护中心快速预审范围（每中心一张卡） */
 .prefiling { margin-top: 18px; }
@@ -161,7 +175,62 @@ details.group > summary { cursor: pointer; font-weight: 600; padding: 8px 0; col
 .pf-footer { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg);
   border: 1px solid var(--warn-line); color: #7c2d12; font-size: .85rem; line-height: 1.5; }
 
+/* 匹配分类号（关键词反查 IPC + 官方分类表说明） */
+.classify { margin-top: 18px; }
+.classify > h2 { font-size: 1rem; margin: 0 0 6px; padding-left: 8px; border-left: 3px solid var(--brand); }
+.cm-hint { font-size: .85rem; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
+.cm-secs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.cm-sec { font: inherit; font-size: .82rem; cursor: pointer; padding: 3px 11px; border-radius: 6px;
+  border: 1px solid var(--line); background: #fff; color: var(--ink); transition: border-color .12s, background .12s; }
+.cm-sec:hover:not(:disabled) { border-color: var(--brand); }
+.cm-sec-on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.cm-sec:disabled { color: var(--muted); background: #f1f5f9; cursor: default; opacity: .6; }
+.cm-cands { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.cm-cand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cm-cand[hidden] { display: none; }   /* 覆盖 .cm-cand 的 display:flex，使大类筛选生效 */
+.cm-chip { font: inherit; font-family: "Cascadia Code", Consolas, monospace; font-size: .85rem;
+  cursor: pointer; padding: 3px 12px; border-radius: 16px; border: 1px solid var(--brand);
+  background: #eff4ff; color: var(--brand-d); white-space: nowrap; transition: background .12s, color .12s; }
+.cm-chip:hover { background: var(--brand); color: #fff; }
+.cm-chip-added { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }
+.cm-desc { font-size: .9rem; color: #374151; flex: 1 1 60%; }
+.cm-rev { flex: 1 1 100%; font-size: .85rem; color: var(--warn); margin-top: 2px; }
+.cm-rev .cm-new { color: var(--brand-d); background: #eff4ff; border: 1px solid var(--brand); padding: 0 5px; border-radius: 4px; margin: 0 3px 0 2px; }
+.cm-rev .cm-newname { color: var(--muted); font-size: .92em; margin-right: 6px; }
+.cm-detail-h { font-size: .9rem; font-weight: 600; color: var(--miss); margin: 4px 0 8px; padding-left: 8px; border-left: 3px solid var(--line); }
+.cm-group { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px; margin-bottom: 8px; }
+.cm-group > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.cm-branch { font-size: .9rem; padding: 7px 0; border-top: 1px dashed var(--line); }
+.cm-branch b { color: var(--brand-d); margin-right: 4px; }
+.cm-mk { font-size: .76rem; color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok-line); padding: 1px 8px; border-radius: 20px; margin-left: 4px; }
+.cm-codes { margin-top: 4px; }
+.cm-codes code { margin-right: 4px; }
+.cm-empty { color: var(--muted); font-size: .9rem; padding: 10px 0; }
+.cm-empty.cm-warn { color: var(--warn); }
+
+/* 使用说明弹窗 */
+.modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
+  padding: 48px 16px; background: rgba(16,24,40,.5); overflow: auto; }
+.modal[hidden] { display: none; }   /* 覆盖 display:flex，使隐藏生效 */
+.modal-box { position: relative; background: var(--card); width: 100%; max-width: 760px;
+  border-radius: 12px; box-shadow: 0 12px 40px rgba(16,24,40,.28); padding: 22px 30px 28px;
+  max-height: calc(100vh - 96px); overflow: auto; }
+.modal-close { position: absolute; top: 8px; right: 12px; border: 0; background: transparent;
+  font-size: 1.7rem; line-height: 1; color: var(--muted); cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.modal-close:hover { color: var(--ink); background: #f1f5f9; }
+.modal-content h2 { margin: 0 0 12px; font-size: 1.3rem; }
+.modal-content h3 { margin: 20px 0 8px; font-size: 1.05rem; padding-left: 8px; border-left: 3px solid var(--brand); }
+.modal-content h4 { margin: 14px 0 4px; font-size: .98rem; color: var(--brand-d); }
+.modal-content p { margin: 6px 0; }
+.modal-content ul, .modal-content ol { margin: 6px 0; padding-left: 22px; }
+.modal-content li { margin: 4px 0; }
+.modal-content blockquote { margin: 8px 0; padding: 8px 12px; background: var(--warn-bg);
+  border: 1px solid var(--warn-line); border-radius: 8px; color: #7c2d12; }
+.modal-content code { font-family: "Cascadia Code", Consolas, monospace; background: #eef2f7;
+  padding: 1px 5px; border-radius: 4px; font-size: .9em; color: var(--brand-d); }
+
 @media (max-width: 560px) {
   .db-stat { margin-left: 0; width: 100%; }
   .field-row { grid-template-columns: 1fr; gap: 0; }
+  .modal-box { padding: 18px 18px 22px; }
 }

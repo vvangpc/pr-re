@@ -15,21 +15,25 @@
 
 <main class="container">
   <section class="query-card">
-    <div class="field">
-      <label for="ipc">IPC 国际专利分类号</label>
-      <input id="ipc" type="text" placeholder="如 B60K6/10、H01M10/0563、G06F40/30" autocomplete="off" autofocus>
-      <div class="hint">填单个分类号；大小写不限，可带子组（/30）。</div>
-    </div>
-    <div class="field">
-      <label for="kw">关键词（空格 / 逗号 / 顿号分隔，可多个）</label>
-      <input id="kw" type="text" placeholder="如 电动汽车 整车 / 磷酸铁锂 正极" autocomplete="off">
-      <div class="hint">命中任一即可；中文按子串宽松匹配。不填则仅按 IPC 提示落点。</div>
+    <div class="field-row">
+      <div class="field">
+        <label for="ipc">IPC 国际专利分类号</label>
+        <textarea id="ipc" class="rect" rows="4" placeholder="如 B60K6/10&#10;H01M10/0563&#10;G06F40/30" autocomplete="off" autofocus></textarea>
+        <div class="hint">多个分类号可用 逗号、顿号、分号、句号 或回车换行 分隔；大小写不限，可带子组（/30）。</div>
+      </div>
+      <div class="field">
+        <label for="kw">关键词 / 摘要</label>
+        <textarea id="kw" class="rect" rows="4" placeholder="如 电动汽车 整车&#10;磷酸铁锂 正极&#10;（也可直接粘贴摘要后点&quot;识别关键词&quot;）" autocomplete="off"></textarea>
+        <div class="hint">多个关键词可用 空格、逗号、顿号、分号、句号 或回车换行 分隔；中文按子串宽松匹配，查询请点「查询」。</div>
+      </div>
     </div>
     <div class="actions">
       <button id="btn-search" class="primary">查询</button>
       <button id="btn-clear" class="ghost">清空</button>
+      <button id="btn-recog" class="ghost" type="button">识别关键词</button>
       <span id="db-stat" class="db-stat"></span>
     </div>
+    <div id="kw-chips" class="kw-chips" hidden></div>
   </section>
 
   <section id="verdict" class="verdict" hidden></section>
@@ -105,6 +109,9 @@
     var r = res.rule, parts = [];
     parts.push('<div class="reason"><span class="k">命中 IPC</span>：<code>' +
       esc(res.matchedPattern) + '</code></div>');
+    if (res._ipcs && res._ipcs.length)
+      parts.push('<div class="reason"><span class="k">匹配你的 IPC</span>：<code>' +
+        res._ipcs.map(esc).join('</code>、<code>') + '</code></div>');
     if (res.status === 'MATCHED') {
       parts.push('<div class="reason"><span class="k">命中关键词</span>：<b>' +
         esc(res.matchedEntryKw) + '</b> ↔ 你的「' + esc(res.matchedQueryKw) + '」</div>');
@@ -174,7 +181,10 @@
 
     // 顶部结论横幅
     V.hidden = false;
-    var ipcTxt = esc(out.qNorm.norm), kwTxt = out.qKws.length ? esc(out.qKws.join('、')) : '（未填）';
+    var ipcTxt = out.multi
+      ? out.qNorms.map(esc).join('、') + (out.qInvalid.length ? '（忽略无效：' + out.qInvalid.map(esc).join('、') + '）' : '')
+      : esc(out.qNorm.norm);
+    var kwTxt = out.qKws.length ? esc(out.qKws.join('、')) : '（未填）';
     var head = 'IPC <code>' + ipcTxt + '</code> · 关键词 ' + kwTxt + '<br>';
     if (g.MATCHED.length) {
       V.className = 'verdict v-ok';
@@ -200,9 +210,142 @@
       groupHtml('IPC 在范围 · 关键词未对上', g.MISS, true);
   }
 
+  var ORDER = { MATCHED: 0, IPC_ONLY_WARN: 1, KW_OPEN_ENDED: 2, IPC_KW_MISS: 3 };
+
+  function splitIpcLines(s) {
+    return String(s || '').split(/[\r\n,，、;；。．\s]+/).map(function (x) { return x.trim(); })
+      .filter(function (x) { return x.length > 0; });
+  }
+
+  // 多 IPC：逐个 lookup，按 entry+rule 去重，保留最优状态并记录命中的查询码。
+  function lookupMulti(ipcStr, kwStr) {
+    var toks = splitIpcLines(ipcStr);
+    if (toks.length <= 1) return window.Match.lookup(ipcStr, kwStr); // 0 或 1 个 → 原路径
+
+    var valid = [], invalid = [];
+    toks.forEach(function (t) {
+      var n = window.Match.normalizeIpc(t);
+      if (n.valid) { if (valid.indexOf(n.norm) < 0) valid.push(n.norm); }
+      else invalid.push(t);
+    });
+
+    var seen = {}, merged = [];
+    valid.forEach(function (norm) {
+      window.Match.lookup(norm, kwStr).results.forEach(function (r) {
+        var key = (r.entry.id || r.entry.branch_no) + '#' + r.ruleIndex;
+        var prev = seen[key];
+        if (!prev) { r._ipcs = [norm]; seen[key] = r; merged.push(r); }
+        else if (ORDER[r.status] < ORDER[prev.status]) {
+          r._ipcs = prev._ipcs.concat([norm]); seen[key] = r; merged[merged.indexOf(prev)] = r;
+        } else if (prev._ipcs.indexOf(norm) < 0) { prev._ipcs.push(norm); }
+      });
+    });
+    merged.sort(function (a, b) { return ORDER[a.status] - ORDER[b.status]; });
+
+    return { multi: true, qNorms: valid, qInvalid: invalid,
+             qKws: window.Match.splitKeywords(kwStr),
+             ipcValid: valid.length > 0, results: merged };
+  }
+
+  // 关键词分词（含句号在内的所有分隔符），用于判断输入是否为整段文字
+  function kwTokens(s) {
+    return String(s || '').split(/[\r\n,，、;；。．\s]+/).filter(function (x) { return x.length > 0; });
+  }
+  // 整段文字判断：任一分词长度超过阈值即视为「一大段话」（关键词词条远短于此）
+  var PROSE_MAX = 18;
+  function looksLikeProse(s) {
+    var t = kwTokens(s);
+    for (var i = 0; i < t.length; i++) { if (t[i].length > PROSE_MAX) return true; }
+    return false;
+  }
+  // 让句号也能充当分隔符（match.js 的 splitKeywords 不含句号）
+  function cleanKw(s) { return String(s || '').replace(/[。．]/g, ' '); }
+
   function doSearch() {
-    var out = window.Match.lookup($('ipc').value, $('kw').value);
-    render(out);
+    var kwRaw = $('kw').value;
+    if (looksLikeProse(kwRaw)) {
+      var V = $('verdict'); V.hidden = false; V.className = 'verdict v-warn';
+      V.innerHTML = '检测到整段文字，未拆分为关键词。请先点「识别关键词」，或用 空格、逗号、顿号、分号、句号 手动断开后再查询。';
+      $('results').innerHTML = '';
+      return;
+    }
+    render(lookupMulti($('ipc').value, cleanKw(kwRaw)));
+  }
+
+  /* ---------------------- 摘要 → 关键词识别（基于目录词库） ---------------------- */
+  var VOCAB = null;       // [{term, norm}]，按 norm 长度降序
+  var recogTerms = [];    // 当前识别出的关键词（标签）
+
+  function buildVocab() {
+    if (VOCAB) return VOCAB;
+    var seen = {}, list = [];
+    var db = window.DB || { entries: [] };
+    for (var e = 0; e < db.entries.length; e++) {
+      var rules = db.entries[e].rules || [];
+      for (var r = 0; r < rules.length; r++) {
+        var kws = rules[r].keywords || [];
+        for (var k = 0; k < kws.length; k++) {
+          var term = kws[k], norm = window.Match.normKw(term);
+          if (!norm || term.length > 16 || seen[norm]) continue; // 跳过过长的拼接式词条
+          seen[norm] = true; list.push({ term: term, norm: norm });
+        }
+      }
+    }
+    list.sort(function (a, b) { return b.norm.length - a.norm.length; }); // 长词优先
+    VOCAB = list; return VOCAB;
+  }
+
+  function recognizeKeywords(text) {
+    var hay = window.Match.normKw(text);
+    if (!hay) return [];
+    var vocab = buildVocab(), hits = [];
+    for (var i = 0; i < vocab.length; i++) {
+      if (hay.indexOf(vocab[i].norm) >= 0) hits.push(vocab[i]); // 已按长词优先
+    }
+    var kept = [];
+    for (var h = 0; h < hits.length; h++) {
+      var n = hits[h].norm, sub = false;
+      for (var j = 0; j < kept.length; j++) { if (kept[j].norm.indexOf(n) >= 0) { sub = true; break; } }
+      if (!sub && n.length >= 2) kept.push(hits[h]); // 抑制被更长词包含的子串 + 至少 2 字
+    }
+    return kept.map(function (x) { return x.term; });
+  }
+
+  function renderChips() {
+    var box = $('kw-chips');
+    if (!recogTerms.length) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    var chips = recogTerms.map(function (t, idx) {
+      return '<span class="chip">' + esc(t) +
+        '<button type="button" data-i="' + idx + '" aria-label="移除">×</button></span>';
+    }).join('');
+    box.innerHTML =
+      '<div class="chips-title">识别到 ' + recogTerms.length + ' 个关键词（点击 × 删除不需要的）：</div>' +
+      '<div class="chips-wrap">' + chips + '</div>' +
+      '<div class="chip-actions">' +
+        '<button type="button" id="chip-apply" class="primary">替换关键词（' + recogTerms.length + '）</button>' +
+        '<button type="button" id="chip-cancel" class="ghost">取消</button>' +
+      '</div>';
+  }
+
+  function onRecognize() {
+    var terms = recognizeKeywords($('kw').value);
+    if (!terms.length) {
+      recogTerms = [];
+      var box = $('kw-chips'); box.hidden = false;
+      box.innerHTML = '<div class="chips-title">未识别到目录内关键词；可用 空格、逗号、顿号、分号、句号 把关键词断开后再查询。</div>';
+      return;
+    }
+    recogTerms = terms; renderChips();
+  }
+
+  function onChipsClick(ev) {
+    var t = ev.target;
+    if (t.id === 'chip-cancel') { recogTerms = []; renderChips(); return; }
+    if (t.id === 'chip-apply') { $('kw').value = recogTerms.join(' '); recogTerms = []; renderChips(); return; }
+    if (t.tagName === 'BUTTON' && t.getAttribute('data-i') !== null) {
+      recogTerms.splice(+t.getAttribute('data-i'), 1); renderChips();
+    }
   }
 
   function init() {
@@ -212,10 +355,10 @@
     $('btn-clear').addEventListener('click', function () {
       $('ipc').value = ''; $('kw').value = '';
       $('verdict').hidden = true; $('results').innerHTML = ''; $('ipc').focus();
+      recogTerms = []; $('kw-chips').hidden = true; $('kw-chips').innerHTML = '';
     });
-    function onEnter(ev) { if (ev.key === 'Enter') doSearch(); }
-    $('ipc').addEventListener('keydown', onEnter);
-    $('kw').addEventListener('keydown', onEnter);
+    $('btn-recog').addEventListener('click', onRecognize);
+    $('kw-chips').addEventListener('click', onChipsClick);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

@@ -47,6 +47,33 @@ code { font-family: "Cascadia Code", Consolas, monospace; background: #eef2f7;
 .field input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
 .hint { color: var(--muted); font-size: .8rem; margin-top: 4px; }
 
+/* 两列查询区 + 矩形文本框 */
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.field-row .field { margin-bottom: 14px; }
+.opt { font-weight: 400; color: var(--muted); font-size: .82em; margin-left: 4px; }
+.field textarea.rect {
+  width: 100%; padding: 10px 12px; font-size: 1rem;
+  font-family: inherit; line-height: 1.5;
+  border: 1px solid var(--line); border-radius: 8px; outline: none;
+  resize: vertical; min-height: 84px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.field textarea.rect:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+
+/* 识别关键词结果框（独立框，显示在查询区下方） */
+.kw-chips { margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 8px; background: #f8fafc; }
+.kw-chips .chips-title { font-size: .85rem; color: var(--muted); margin-bottom: 8px; }
+.kw-chips .chips-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.kw-chips .chip { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem;
+  padding: 3px 6px 3px 10px; background: #fff; border: 1px solid var(--line);
+  border-radius: 16px; color: var(--ink); }
+.kw-chips .chip button { border: 0; background: transparent; padding: 0 2px; line-height: 1;
+  cursor: pointer; color: var(--muted); font-size: 1rem; }
+.kw-chips .chip button:hover { color: var(--no); }
+.kw-chips .chip-actions { display: flex; gap: 8px; margin-top: 10px; }
+.kw-chips .chip-actions button { font-size: .82rem; padding: 4px 10px; }
+
 .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 button { font: inherit; cursor: pointer; border-radius: 8px; padding: 9px 20px; border: 1px solid transparent; }
 button.primary { background: var(--brand); color: #fff; font-weight: 600; }
@@ -112,4 +139,7 @@ details.group > summary { cursor: pointer; font-weight: 600; padding: 8px 0; col
 .app-footer { max-width: 920px; margin: 10px auto 30px; padding: 0 20px; }
 .app-footer p { color: var(--muted); font-size: .8rem; }
 
-@media (max-width: 560px) { .db-stat { margin-left: 0; width: 100%; } }
+@media (max-width: 560px) {
+  .db-stat { margin-left: 0; width: 100%; }
+  .field-row { grid-template-columns: 1fr; gap: 0; }
+}

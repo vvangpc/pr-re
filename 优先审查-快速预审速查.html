@@ -166,7 +166,7 @@
 
   var CAT_SHORT = {
     xinsanyang: '新三样', shuzi: '关键数字技术', lvse: '绿色技术',
-    lvse_appendix: '绿色检索式', zhanlue: '战略性新兴产业'
+    zhanlue: '战略性新兴产业'
   };
   var SEC_NAME = {
     A: 'A 人类生活必需', B: 'B 作业；运输', C: 'C 化学；冶金', D: 'D 纺织；造纸',
@@ -328,7 +328,11 @@
         } else if (prev._ipcs.indexOf(norm) < 0) { prev._ipcs.push(norm); }
       });
     });
-    merged.sort(function (a, b) { return ORDER[a.status] - ORDER[b.status]; });
+    merged.sort(function (a, b) {
+      var s = ORDER[a.status] - ORDER[b.status];
+      if (s) return s;
+      return (b.score || 0) - (a.score || 0);   // 同状态：命中强度高者靠前
+    });
 
     return { multi: true, qNorms: valid, qInvalid: invalid,
              qKws: window.Match.splitKeywords(kwStr),

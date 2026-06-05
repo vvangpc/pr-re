@@ -3,7 +3,7 @@
  *
  * 判定规则：分类号匹配 且 关键词匹配。
  *   - IPC：逐字段相等比较，支持 * 通配（子树）与排除项（不含/不包括）。
- *   - 关键词：双向子串；排除项采用「查询词包含排除词」单向判定，避免误杀。
+ *   - 关键词：按命中核心词强度匹配（单字/泛词降噪）；排除项「查询词含排除词」单向判定。
  *   - 空关键词（ipc_only）不直接放行，单列为 IPC_ONLY_WARN 提醒人工确认。
  *
  * 数据来源：全局 window.DB（由 data/_loader.js + data/<目录>.js 注入）。
@@ -29,13 +29,15 @@
     var s = toHalf(raw).toUpperCase().replace(/\s+/g, '').replace(/／/g, '/');
     var wildcard = false;
     if (s.charAt(s.length - 1) === '*') { wildcard = true; s = s.slice(0, -1); }
-    // 部(A-H,Y) 大类(2位) 小类(1字母)? 大组(1-3位)? (/小组 2-6位)?
-    var m = s.match(/^([A-HY])(\d{2})([A-Z])?(\d{1,3})?(?:\/(\d{2,6}))?$/);
+    // 部(A-H) 大类(2位) 小类(1字母)? 大组(1-3位)? (/小组 2-6位)?
+    // 注：Y 部为 CPC 专有，IPC 不含；本工具数据零 Y，故部首仅 A-H。
+    var m = s.match(/^([A-H])(\d{2})([A-Z])?(\d{1,3})?(?:\/(\d{2,6}))?$/);
     if (!m) return { valid: false, raw: raw };
     var section = m[1], cls = m[2], subclass = m[3] || null,
         group = m[4] || null, subgroup = m[5] || null;
+    // 正则要求两位大类数字，故 level 最低为 class，不存在纯部级 section
     var level = subgroup ? 'subgroup' : group ? 'group'
-              : subclass ? 'subclass' : cls ? 'class' : 'section';
+              : subclass ? 'subclass' : 'class';
     return {
       valid: true, raw: raw, norm: s + (wildcard ? '*' : ''),
       section: section, cls: cls, subclass: subclass,
@@ -55,7 +57,6 @@
 
     if (p.wildcard) {
       switch (p.level) {
-        case 'section':  return true;                 // 同部即可
         case 'class':    return eqClass();
         case 'subclass': return eqSubclass();
         case 'group':    return eqGroup();            // 大组相等，子组任意
@@ -65,7 +66,6 @@
       }
     } else {
       switch (p.level) {
-        case 'section':  return true;
         case 'class':    return eqClass();
         case 'subclass': return eqSubclass();         // 整个小类
         // 裸大组 B60L8 视同主组 B60L8/00（仅 /00 或无子组）
@@ -99,19 +99,43 @@
     return s.trim();
   }
 
-  // 正向匹配：双向子串（中文无词边界，宽松命中）。
-  function kwMatch(a, b) {
+  // 泛词表：单独成词时几乎无领域区分度，靠子串命中它们只会制造噪音。
+  // 仅当「命中的核心词整串等于」其中之一才降级为弱命中；如「控制系统」整串
+  // 不在表内，仍按实词处理。表保持保守，只收纯结构性、无技术指向的词。
+  var GENERIC_KW = {
+    '系统':1,'装置':1,'设备':1,'方法':1,'制造':1,'材料':1,'技术':1,'服务':1,
+    '产品':1,'生产':1,'加工':1,'控制':1,'管理':1,'应用':1,'平台':1,'器件':1,
+    '仪器':1,'工艺':1
+  };
+  var KW_STRONG = 2;  // score ≥ 此值才算「强命中」（足以判 MATCHED）
+
+  // 正向匹配强度：双向子串（中文无词边界），但按命中核心词收紧噪音。
+  //   0  不匹配
+  //   1  仅泛词命中（弱，不足以 MATCHED）
+  //  ≥2  强命中，数值含命中核心词长度（越长越特异，用于组内排序；精确相等再 +1）
+  // 核心词 = 被整体包含的较短串：单字（<2）一律判 0，挡掉「光/电/车」泛滥。
+  function kwScore(a, b) {
     var x = normKw(a), y = normKw(b);
-    if (!x || !y) return false;
-    return x.indexOf(y) >= 0 || y.indexOf(x) >= 0;
+    if (!x || !y) return 0;
+    var core;
+    if (x === y) core = x;
+    else if (x.indexOf(y) >= 0) core = y;     // x 含 y：核心是 y
+    else if (y.indexOf(x) >= 0) core = x;     // y 含 x：核心是 x
+    else return 0;
+    if (core.length < 2) return 0;            // 单字守卫
+    if (GENERIC_KW[core]) return 1;           // 泛词单独命中 → 弱
+    return core.length + (x === y ? 1 : 0);   // 强命中；精确相等略加成
   }
+
+  // 对外仍是布尔语义（向后兼容），但收紧为「强命中」。
+  function kwMatch(a, b) { return kwScore(a, b) >= KW_STRONG; }
 
   // 排除匹配：仅当「查询词 包含 排除词」才算命中排除，避免泛词误杀
   // （如排除「燃料汽车」，查询「汽车」不应被排除）。
   function kwExcludeHit(queryKws, excludes) {
     for (var i = 0; i < (excludes || []).length; i++) {
       var ex = normKw(excludes[i]);
-      if (!ex) continue;
+      if (ex.length < 2) continue;           // 单字排除词不参与，避免泛词误杀整行
       for (var j = 0; j < queryKws.length; j++) {
         if (normKw(queryKws[j]).indexOf(ex) >= 0) return excludes[i];
       }
@@ -126,7 +150,7 @@
   }
 
   /* ------------------------------ 单条 rule 评估 ------------------------- */
-  // 返回 {status, matchedPattern, matchedQueryKw, matchedEntryKw, excludedBy} 或 null。
+  // 返回 {status, matchedPattern, matchedQueryKw, matchedEntryKw, score} 或 null。
   // status: MATCHED | IPC_ONLY_WARN | KW_OPEN_ENDED | IPC_KW_MISS
   function evalRule(qNorm, qKws, rule) {
     var matchedPattern = ipcQualify(qNorm, rule.ipc_patterns || [], rule.ipc_exclusions);
@@ -140,14 +164,17 @@
       return { status: 'IPC_ONLY_WARN', matchedPattern: matchedPattern };
     }
 
-    // 正向关键词匹配
+    // 正向关键词匹配：扫全部组合，取强度最高者（弱/泛词命中不足以判 MATCHED）
+    var best = 0, bestQ = null, bestK = null;
     for (var i = 0; i < qKws.length; i++) {
       for (var j = 0; j < kws.length; j++) {
-        if (kwMatch(qKws[i], kws[j])) {
-          return { status: 'MATCHED', matchedPattern: matchedPattern,
-                   matchedQueryKw: qKws[i], matchedEntryKw: kws[j] };
-        }
+        var sc = kwScore(qKws[i], kws[j]);
+        if (sc >= KW_STRONG && sc > best) { best = sc; bestQ = qKws[i]; bestK = kws[j]; }
       }
+    }
+    if (best >= KW_STRONG) {
+      return { status: 'MATCHED', matchedPattern: matchedPattern,
+               matchedQueryKw: bestQ, matchedEntryKw: bestK, score: best };
     }
     if (rule.open_ended) return { status: 'KW_OPEN_ENDED', matchedPattern: matchedPattern };
     return { status: 'IPC_KW_MISS', matchedPattern: matchedPattern };
@@ -173,7 +200,8 @@
           out.results.push({
             entry: entry, ruleIndex: r, rule: rules[r],
             status: res.status, matchedPattern: res.matchedPattern,
-            matchedQueryKw: res.matchedQueryKw, matchedEntryKw: res.matchedEntryKw
+            matchedQueryKw: res.matchedQueryKw, matchedEntryKw: res.matchedEntryKw,
+            score: res.score || 0
           });
         }
       }
@@ -181,6 +209,10 @@
     out.results.sort(function (a, b) {
       var s = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
       if (s) return s;
+      if (a.status === 'MATCHED') {            // 同为命中：强度高者靠前，弱命中沉底
+        var sc = (b.score || 0) - (a.score || 0);
+        if (sc) return sc;
+      }
       var ca = (a.entry.catalog_id || ''), cb = (b.entry.catalog_id || '');
       if (ca !== cb) return ca < cb ? -1 : 1;
       return cmpBranch(a.entry.branch_no, b.entry.branch_no);
@@ -222,9 +254,39 @@
       if (got === cases[i][2]) pass++;
       else fails.push(cases[i][0] + ' vs ' + cases[i][1] + ' 期望 ' + cases[i][2] + ' 实得 ' + got);
     }
+    // 部级边界：Y 部属 CPC，本工具数据仅 A-H，Y 码应判无效（H 作对照仍有效）
+    if (!normalizeIpc('Y02E10/00').valid && normalizeIpc('H01M10/00').valid) pass++;
+    else fails.push('部级有效性：Y 应无效且 H 应有效，未达预期');
+    var ipcTotal = cases.length + 1;
     if (fails.length) console.error('[match.js] IPC 自测失败:\n' + fails.join('\n'));
-    console.log('[match.js] IPC 自测：' + pass + '/' + cases.length + ' 通过');
-    return { pass: pass, total: cases.length, fails: fails };
+    console.log('[match.js] IPC 自测：' + pass + '/' + ipcTotal + ' 通过');
+
+    // 关键词匹配回归：[查询词, 条目词, 期望 kwMatch]
+    var kw = [
+      ['电池',     '锂离子电池单体、模块及系统', true ],  // 实词子串命中
+      ['集成电路', '集成电路制造',               true ],  // 查询⊂条目
+      ['量子计算机','量子计算',                   true ],  // 条目⊂查询
+      ['集成电路', '集成电路',                     true ],  // 精确相等
+      ['系统',     '工业控制计算机及系统制造',     false],  // 仅泛词 → 弱，不算命中
+      ['控制',     '运动控制装置',                 false],  // 泛词
+      ['光',       '准分子激光退火设备',           false],  // 单字守卫
+      ['车',       '新能源汽车整车制造',           false],  // 单字守卫
+      ['锂电池',   '镍氢电池',                     false]   // 无公共子串
+    ];
+    var kwPass = 0;
+    for (var k = 0; k < kw.length; k++) {
+      var g = kwMatch(kw[k][0], kw[k][1]);
+      if (g === kw[k][2]) kwPass++;
+      else fails.push('kw「' + kw[k][0] + '」vs「' + kw[k][1] + '」期望 ' + kw[k][2] + ' 实得 ' + g);
+    }
+    // 排除词单字守卫：不应误杀
+    if (kwExcludeHit(['汽车导航'], ['车']) === null) kwPass++;
+    else fails.push('kwExcludeHit 单字排除词「车」误杀了「汽车导航」');
+    var kwTotal = kw.length + 1;
+    if (kwPass !== kwTotal) console.error('[match.js] 关键词自测失败:\n' + fails.join('\n'));
+    console.log('[match.js] 关键词自测：' + kwPass + '/' + kwTotal + ' 通过');
+
+    return { pass: pass + kwPass, total: ipcTotal + kwTotal, fails: fails };
   }
 
   /* ------------------------------- 导出 -------------------------------- */
@@ -233,6 +295,7 @@
     ipcMatches: ipcMatches,
     normKw: normKw,
     kwMatch: kwMatch,
+    kwScore: kwScore,
     splitKeywords: splitKeywords,
     evalRule: evalRule,
     lookup: lookup,

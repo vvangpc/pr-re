@@ -370,18 +370,47 @@
   var VOCAB = null;       // [{term, norm}]，按 norm 长度降序
   var recogTerms = [];    // 当前识别出的关键词（标签）
 
+  // 长短语（>16 字的拼接式词条）切分为可命中的子术语。
+  // 目录里大量关键词是「A；B、C等其他D；E」式的长描述，整段几乎不可能在摘要中
+  // 原样出现；切成子术语后，藏在其中的「数字程控交换机」「光纤制造」等才能被识别。
+  var PHRASE_SEP = /[、；;，,。．\/\s]+/;
+  // 切分后剔除的纯结构/评价泛词（单独成词无技术指向，作标签即噪音）
+  var PHRASE_STOP = {
+    '制造':1,'服务':1,'设备':1,'系统':1,'技术':1,'生产':1,'应用':1,'装置':1,'产品':1,
+    '材料':1,'其他':1,'各类':1,'相关':1,'制品':1,'平台':1,'领域':1,'方面':1,'多种':1,
+    '系列':1,'质量':1,'性能':1,'精度':1,'效率':1,'成本':1
+  };
+  function splitPhrase(term) {
+    var out = [];
+    term.split(PHRASE_SEP).forEach(function (seg) {
+      // 去开放式「等…」列举概括尾，但用否定前瞻保护「等离子/等价/等温」等含「等」的术语
+      seg = seg.replace(/等(?!离子|价|式|高|温|压|效|当)[^]*$/, '');
+      var norm = window.Match.normKw(seg);
+      if (norm.length >= 2 && norm.length <= 12 && !PHRASE_STOP[norm])
+        out.push({ term: seg.trim() || norm, norm: norm });
+    });
+    return out;
+  }
+
   function buildVocab() {
     if (VOCAB) return VOCAB;
     var seen = {}, list = [];
     var db = window.DB || { entries: [] };
+    function add(term, norm) {
+      if (!norm || seen[norm]) return;
+      seen[norm] = true; list.push({ term: term, norm: norm });
+    }
     for (var e = 0; e < db.entries.length; e++) {
       var rules = db.entries[e].rules || [];
       for (var r = 0; r < rules.length; r++) {
         var kws = rules[r].keywords || [];
         for (var k = 0; k < kws.length; k++) {
-          var term = kws[k], norm = window.Match.normKw(term);
-          if (!norm || term.length > 16 || seen[norm]) continue; // 跳过过长的拼接式词条
-          seen[norm] = true; list.push({ term: term, norm: norm });
+          var term = kws[k];
+          if (term.length > 16) {                          // 长短语：切分后逐子术语入库
+            splitPhrase(term).forEach(function (p) { add(p.term, p.norm); });
+          } else {
+            add(term, window.Match.normKw(term));           // 短词条：整条入库（同原逻辑）
+          }
         }
       }
     }

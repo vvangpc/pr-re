@@ -55,6 +55,7 @@
       <li><span class="tag t-warn">需人工确认</span> IPC 命中，但该条目<b>无关键词限定</b>（如绿色技术目录）——不自动放行，请人工确认。</li>
       <li><span class="tag t-warn">疑似命中</span> IPC 命中，关键词列以「等」结尾且未显式命中 —— 请人工复核。</li>
       <li><span class="tag t-miss">IPC 在范围</span> IPC 落入该分支，但所给关键词未对上 —— 可调整关键词再判。</li>
+      <li><span class="tag t-miss">需人工确认</span> IPC 仅匹配到分支的<b>小类级</b>范围（未精确到大组），命中偏宽 —— 请人工确认。</li>
       <li><span class="tag t-no">未命中</span> 该 IPC 不在任何目录范围内。</li>
     </ul>
   </details>
@@ -173,10 +174,11 @@
     E: 'E 固定建筑物', F: 'F 机械工程；照明；加热；武器；爆破', G: 'G 物理', H: 'H 电学'
   };
   var STATUS_META = {
-    MATCHED:       { cls: 't-ok',   label: '完全命中' },
-    IPC_ONLY_WARN: { cls: 't-warn', label: '需人工确认（无关键词）' },
-    KW_OPEN_ENDED: { cls: 't-warn', label: '疑似命中（列表含「等」）' },
-    IPC_KW_MISS:   { cls: 't-miss', label: 'IPC 在范围 · 关键词未对上' }
+    MATCHED:        { cls: 't-ok',   label: '完全命中' },
+    IPC_ONLY_WARN:  { cls: 't-warn', label: '需人工确认（无关键词）' },
+    KW_OPEN_ENDED:  { cls: 't-warn', label: '疑似命中（列表含「等」）' },
+    IPC_KW_MISS:    { cls: 't-miss', label: 'IPC 在范围 · 关键词未对上' },
+    IPC_BROAD_WARN: { cls: 't-miss', label: '需人工确认（IPC 仅小类级匹配）' }
   };
 
   function esc(s) {
@@ -211,6 +213,9 @@
     } else if (res.status === 'IPC_KW_MISS') {
       parts.push('<div class="reason">本分支关键词：' +
         esc((r.keywords || []).join('、')) + '。可调整关键词后重判。</div>');
+    } else if (res.status === 'IPC_BROAD_WARN') {
+      parts.push('<div class="reason warn">该 IPC 仅匹配到本分支的<b>小类级</b>范围（<code>' +
+        esc(res.matchedPattern) + '</code>，未精确到大组），命中偏宽泛，请人工确认是否确属本分支。</div>');
     }
     if (r.coverage) parts.push('<div class="reason"><span class="k">覆盖</span>：' + esc(r.coverage) + '</div>');
     if (r.keyword_exclusions && r.keyword_exclusions.length) {
@@ -258,11 +263,12 @@
       V.innerHTML = '请输入有效的 IPC 分类号，例如 <code>B60K6/10</code>、<code>H01M10/0563</code>。';
       R.innerHTML = ''; return;
     }
-    var g = { MATCHED: [], IPCONLY: [], OPEN: [], MISS: [] };
+    var g = { MATCHED: [], IPCONLY: [], OPEN: [], MISS: [], BROAD: [] };
     out.results.forEach(function (r) {
       if (r.status === 'MATCHED') g.MATCHED.push(r);
       else if (r.status === 'IPC_ONLY_WARN') g.IPCONLY.push(r);
       else if (r.status === 'KW_OPEN_ENDED') g.OPEN.push(r);
+      else if (r.status === 'IPC_BROAD_WARN') g.BROAD.push(r);
       else g.MISS.push(r);
     });
     var warnN = g.IPCONLY.length + g.OPEN.length;
@@ -284,6 +290,9 @@
     } else if (g.MISS.length) {
       V.className = 'verdict v-miss';
       V.innerHTML = head + 'ℹ️ IPC 落在 ' + g.MISS.length + ' 个分支范围内，但<b>关键词未对上</b>；请调整关键词。';
+    } else if (g.BROAD.length) {
+      V.className = 'verdict v-miss';
+      V.innerHTML = head + 'ℹ️ 仅<b>小类级</b>匹配到 ' + g.BROAD.length + ' 个分支（IPC 未精确到大组、命中偏宽），请人工确认。';
     } else {
       V.className = 'verdict v-no';
       V.innerHTML = head + '❌ <b>未命中</b>：该 IPC 不在任何优先审查目录范围内。';
@@ -295,10 +304,11 @@
       groupHtml('完全命中', g.MATCHED, false) +
       groupHtml('需人工确认（条目无关键词限定）', g.IPCONLY, false) +
       groupHtml('疑似命中（关键词列含「等」，未明确命中）', g.OPEN, collapseOpen) +
-      groupHtml('IPC 在范围 · 关键词未对上', g.MISS, true);
+      groupHtml('IPC 在范围 · 关键词未对上', g.MISS, true) +
+      groupHtml('需人工确认（IPC 仅小类级匹配，偏宽）', g.BROAD, true);
   }
 
-  var ORDER = { MATCHED: 0, IPC_ONLY_WARN: 1, KW_OPEN_ENDED: 2, IPC_KW_MISS: 3 };
+  var ORDER = { MATCHED: 0, IPC_ONLY_WARN: 1, KW_OPEN_ENDED: 2, IPC_KW_MISS: 3, IPC_BROAD_WARN: 4 };
 
   function splitIpcLines(s) {
     return String(s || '').split(/[\r\n,，、;；。．\s]+/).map(function (x) { return x.trim(); })

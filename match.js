@@ -90,22 +90,33 @@
     return a !== null && b !== null && a === b;
   }
 
-  // 命中任一 patterns 且 不命中任一 exclusions。返回命中的 pattern 字符串或 null。
-  // 正向按「大组」匹配；排除项仍用 ipcMatches 精确各级判定（避免大组级误排）。
+  // 小类/大类级 pattern（无大组，如 F24F*、H04*）的「宽泛命中」：查询码落入其小类/大类范围。
+  // 这类命中不如大组精确，evalRule 会降级为 IPC_BROAD_WARN（需人工确认、排最后）。
+  function ipcBroadMatch(q, p) {
+    if (!p || !p.valid || ipcGroupKey(p) !== null) return false; // 有大组的不算宽泛
+    return ipcMatches(q, p);
+  }
+
+  // 命中任一 pattern 且不落入任一 exclusion。返回 {pattern, kind} 或 null。
+  // kind: 'group'（大组精确匹配，优先）| 'broad'（小类/大类宽泛命中，降级）。
+  // 排除项用 ipcMatches 精确各级判定（避免大组级误排）。
   function ipcQualify(qNorm, patterns, exclusions) {
-    var hit = null, i, pn;
+    var hitGroup = null, hitBroad = null, i, pn;
     for (i = 0; i < patterns.length; i++) {
       pn = normalizeIpc(patterns[i]);
       if (ipcMatchesGroup(qNorm, pn)) {
-        if (hit === null) hit = patterns[i];
-        if (qNorm.norm === pn.norm) { hit = patterns[i]; break; } // 数据含与查询完全相同的码 → 优先显示
+        if (hitGroup === null) hitGroup = patterns[i];
+        if (qNorm.norm === pn.norm) { hitGroup = patterns[i]; break; } // 完全相同码优先显示
+      } else if (hitBroad === null && ipcBroadMatch(qNorm, pn)) {
+        hitBroad = patterns[i];
       }
     }
+    var hit = hitGroup || hitBroad;
     if (hit === null) return null;
     for (i = 0; i < (exclusions || []).length; i++) {
       if (ipcMatches(qNorm, normalizeIpc(exclusions[i]))) return null; // 落入排除
     }
-    return hit;
+    return { pattern: hit, kind: hitGroup ? 'group' : 'broad' };
   }
 
   /* --------------------------- 关键词归一化 / 匹配 ----------------------- */
@@ -171,11 +182,15 @@
   // 返回 {status, matchedPattern, matchedQueryKw, matchedEntryKw, score} 或 null。
   // status: MATCHED | IPC_ONLY_WARN | KW_OPEN_ENDED | IPC_KW_MISS
   function evalRule(qNorm, qKws, rule) {
-    var matchedPattern = ipcQualify(qNorm, rule.ipc_patterns || [], rule.ipc_exclusions);
-    if (matchedPattern === null) return null;            // IPC 不在范围或被 IPC 排除
+    var q = ipcQualify(qNorm, rule.ipc_patterns || [], rule.ipc_exclusions);
+    if (q === null) return null;                         // IPC 不在范围或被 IPC 排除
+    var matchedPattern = q.pattern;
 
     // 关键词排除门（即便无正向关键词也生效，如「排除燃料汽车」类条目）
     if (qKws.length && kwExcludeHit(qKws, rule.keyword_exclusions)) return null;
+
+    // 小类/大类宽泛命中：IPC 仅匹配到小类级，统一降级为「需人工确认」，排最后
+    if (q.kind === 'broad') return { status: 'IPC_BROAD_WARN', matchedPattern: matchedPattern };
 
     var kws = rule.keywords || [];
     if (rule.ipc_only || kws.length === 0) {
@@ -200,7 +215,7 @@
 
   /* ------------------------------ 顶层查询 ------------------------------ */
 
-  var STATUS_ORDER = { MATCHED: 0, IPC_ONLY_WARN: 1, KW_OPEN_ENDED: 2, IPC_KW_MISS: 3 };
+  var STATUS_ORDER = { MATCHED: 0, IPC_ONLY_WARN: 1, KW_OPEN_ENDED: 2, IPC_KW_MISS: 3, IPC_BROAD_WARN: 4 };
 
   function lookup(ipcStr, kwStr) {
     var qNorm = normalizeIpc(ipcStr);
@@ -300,6 +315,22 @@
     if (gpPass !== gp.length) console.error('[match.js] 大组匹配自测失败:\n' + fails.join('\n'));
     console.log('[match.js] 大组匹配自测：' + gpPass + '/' + gp.length + ' 通过');
 
+    // 宽泛命中（小类/大类级 pattern → 降级）：[query, pattern, 期望 ipcBroadMatch]
+    var bd = [
+      ['F24F11/52','F24F*',   true ],  // 落入小类 → 宽泛命中
+      ['F24F11/52','F24F11*', false],  // 大组级，非宽泛（由 group 处理）
+      ['F24F11/52','B60K*',   false],  // 不同小类
+      ['H04W4/00', 'H04*',    true ]   // 落入大类 → 宽泛命中
+    ];
+    var bdPass = 0;
+    for (var bi = 0; bi < bd.length; bi++) {
+      var bb = ipcBroadMatch(normalizeIpc(bd[bi][0]), normalizeIpc(bd[bi][1]));
+      if (bb === bd[bi][2]) bdPass++;
+      else fails.push('宽泛「' + bd[bi][0] + '」vs「' + bd[bi][1] + '」期望 ' + bd[bi][2] + ' 实得 ' + bb);
+    }
+    if (bdPass !== bd.length) console.error('[match.js] 宽泛命中自测失败:\n' + fails.join('\n'));
+    console.log('[match.js] 宽泛命中自测：' + bdPass + '/' + bd.length + ' 通过');
+
     // 关键词匹配回归：[查询词, 条目词, 期望 kwMatch]
     var kw = [
       ['电池',     '锂离子电池单体、模块及系统', true ],  // 实词子串命中
@@ -325,7 +356,7 @@
     if (kwPass !== kwTotal) console.error('[match.js] 关键词自测失败:\n' + fails.join('\n'));
     console.log('[match.js] 关键词自测：' + kwPass + '/' + kwTotal + ' 通过');
 
-    return { pass: pass + gpPass + kwPass, total: ipcTotal + gp.length + kwTotal, fails: fails };
+    return { pass: pass + gpPass + bdPass + kwPass, total: ipcTotal + gp.length + bd.length + kwTotal, fails: fails };
   }
 
   /* ------------------------------- 导出 -------------------------------- */

@@ -2,7 +2,8 @@
  * match.js —— 专利优先审查查找工具 · 匹配引擎（纯前端，无依赖）
  *
  * 判定规则：分类号匹配 且 关键词匹配。
- *   - IPC：逐字段相等比较，支持 * 通配（子树）与排除项（不含/不包括）。
+ *   - IPC（优先审查）：归约到「大组」比较（F24F11/52→F24F11；F24F* 等小类/大类级不命中）；
+ *     排除项仍按精确各级（ipcMatches）判定，避免大组级误排。
  *   - 关键词：按命中核心词强度匹配（单字/泛词降噪）；排除项「查询词含排除词」单向判定。
  *   - 空关键词（ipc_only）不直接放行，单列为 IPC_ONLY_WARN 提醒人工确认。
  *
@@ -77,11 +78,28 @@
     return false;
   }
 
+  // 取「大组」键：部+大类+小类+大组（忽略小组与通配）。无大组返回 null。
+  // 优先审查正向匹配用：F24F11/52、F24F11*、F24F11 均归约为 F24F11；
+  // F24F*、H04* 等小类/大类级（无大组）一律 null → 不命中。
+  function ipcGroupKey(x) {
+    if (!x || !x.valid || !x.group) return null;
+    return x.section + x.cls + x.subclass + x.group;
+  }
+  function ipcMatchesGroup(q, p) {
+    var a = ipcGroupKey(q), b = ipcGroupKey(p);
+    return a !== null && b !== null && a === b;
+  }
+
   // 命中任一 patterns 且 不命中任一 exclusions。返回命中的 pattern 字符串或 null。
+  // 正向按「大组」匹配；排除项仍用 ipcMatches 精确各级判定（避免大组级误排）。
   function ipcQualify(qNorm, patterns, exclusions) {
-    var hit = null, i;
+    var hit = null, i, pn;
     for (i = 0; i < patterns.length; i++) {
-      if (ipcMatches(qNorm, normalizeIpc(patterns[i]))) { hit = patterns[i]; break; }
+      pn = normalizeIpc(patterns[i]);
+      if (ipcMatchesGroup(qNorm, pn)) {
+        if (hit === null) hit = patterns[i];
+        if (qNorm.norm === pn.norm) { hit = patterns[i]; break; } // 数据含与查询完全相同的码 → 优先显示
+      }
     }
     if (hit === null) return null;
     for (i = 0; i < (exclusions || []).length; i++) {
@@ -261,6 +279,27 @@
     if (fails.length) console.error('[match.js] IPC 自测失败:\n' + fails.join('\n'));
     console.log('[match.js] IPC 自测：' + pass + '/' + ipcTotal + ' 通过');
 
+    // 大组匹配（优先审查正向）：[query, pattern, 期望 ipcMatchesGroup]
+    var gp = [
+      ['F24F11/52','F24F11/52', true ],  // 同大组
+      ['F24F11/52','F24F11/30', true ],  // 同大组、不同小组 → 命中（忽略小组）
+      ['F24F11/52','F24F11*',   true ],  // 大组通配
+      ['F24F11/52','F24F11',    true ],  // 裸大组
+      ['F24F11/52','F24F*',     false],  // 小类通配 → 不命中
+      ['F24F11/52','F24F',      false],  // 裸小类 → 不命中
+      ['F24F11/52','B60K6/08',  false],  // 不同大组
+      ['B60K6/08', 'B60K6*',    true ],  // 大组通配命中
+      ['H04W4/00', 'H04*',      false]   // 大类通配 → 不命中
+    ];
+    var gpPass = 0;
+    for (var gi = 0; gi < gp.length; gi++) {
+      var gg = ipcMatchesGroup(normalizeIpc(gp[gi][0]), normalizeIpc(gp[gi][1]));
+      if (gg === gp[gi][2]) gpPass++;
+      else fails.push('大组「' + gp[gi][0] + '」vs「' + gp[gi][1] + '」期望 ' + gp[gi][2] + ' 实得 ' + gg);
+    }
+    if (gpPass !== gp.length) console.error('[match.js] 大组匹配自测失败:\n' + fails.join('\n'));
+    console.log('[match.js] 大组匹配自测：' + gpPass + '/' + gp.length + ' 通过');
+
     // 关键词匹配回归：[查询词, 条目词, 期望 kwMatch]
     var kw = [
       ['电池',     '锂离子电池单体、模块及系统', true ],  // 实词子串命中
@@ -286,13 +325,14 @@
     if (kwPass !== kwTotal) console.error('[match.js] 关键词自测失败:\n' + fails.join('\n'));
     console.log('[match.js] 关键词自测：' + kwPass + '/' + kwTotal + ' 通过');
 
-    return { pass: pass + kwPass, total: ipcTotal + kwTotal, fails: fails };
+    return { pass: pass + gpPass + kwPass, total: ipcTotal + gp.length + kwTotal, fails: fails };
   }
 
   /* ------------------------------- 导出 -------------------------------- */
   global.Match = {
     normalizeIpc: normalizeIpc,
     ipcMatches: ipcMatches,
+    ipcMatchesGroup: ipcMatchesGroup,
     normKw: normKw,
     kwMatch: kwMatch,
     kwScore: kwScore,
